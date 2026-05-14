@@ -18,19 +18,42 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
+enum error_codes
+{
+    OK, BAD_MD5, PROTO_ERR, IO_ERR
+};
+
 #define EXIT_CODE_SUCCESS          0
 #define EXIT_CODE_FAILURE          1
 #define EXIT_CODE_INVALID_ARGS     2
 #define EXIT_CODE_DAEMON_FAILURE   3
 #define EXIT_CODE_SETUP_FAILURE    4
 
-#define NUM_CONNECTIONS 100
+#define HEADER_SIZE      (4 + 4 + 4 + 8 + 16) // magic, version=1, filename length, file size, md5
 
-// Log levels DEBUG=0, RELEASE=1
+#define MAX_BUFFER       65536
+#define MAX_EVENTS       512
+#define MAX_FDS          4096
+#define NUM_CONNECTIONS  512
+
+#define MAX_PATH         512
+#define MAX_HOST         256
+#define MAX_MAGIC        256
+#define MAX_FILENAME_LEN 255
+
+enum client_state_t
+{
+    CLIENT_READING_HEADER,
+    CLIENT_READING_FILENAME,
+    CLIENT_READING_FILEDATA,
+    CLIENT_SENDING_RESPONSE,
+    CLIENT_CLOSED
+};
+
 enum log_level_t
 {
-    LOG_LEVEL_DEBUG = 0,
-    LOG_LEVEL_RELEASE = 1
+    LOG_LEVEL_DEBUG,
+    LOG_LEVEL_RELEASE
 };
 
 enum log_type_t
@@ -40,7 +63,35 @@ enum log_type_t
     LOG_TYPE_WARNING
 };
 
-// Function prototypes
+struct client_t
+{
+    int fd;
+    enum client_state_t state;
+    enum error_codes  result_code;
+    
+    size_t header_received;
+
+    uint32_t filename_len;
+    int file_fd;
+
+    uint32_t version;
+
+    uint64_t file_size;
+    uint8_t file_md5[16];
+
+    size_t file_received;
+    size_t filename_received;
+    size_t response_sent;
+
+    char tmp_path[MAX_PATH];
+    char final_path[MAX_PATH];
+
+    uint8_t header[HEADER_SIZE];
+
+    EVP_MD_CTX* mdctx;
+    char* filename;
+};
+
 int parse_args(int argc, char const* argv[], char* host, uint16_t* port, uint64_t* buffer_size, uint8_t* log_level, uint16_t* max_clients, uint16_t* timeout);
 void print_usage(const char* program_name, const char* host, const uint16_t port, const uint64_t buffer_size, const uint8_t log_level, const uint16_t max_clients, const uint16_t timeout);
 
@@ -325,7 +376,7 @@ void print_usage(const char* program_name, const char* host, const uint16_t port
         "    --daemon / -d   INT    Run as a daemon (default: %d)\n"
         "Monitor: 'journalctl -t backupd -f'\n";
 
-    printf(usage, program_name, host, port, buffer_size, log_level == LOG_LEVEL_DEBUG ? "debug" : "release", max_clients, timeout, is_daemon);
+    printf(usage, program_name, host, port, buffer_size, log_level == LOG_LEVEL_DEBUG ? "debug" : "release", max_clients, timeout);
 }
 
 void handle_signal (int signal)
