@@ -42,7 +42,7 @@ enum log_type_t
 
 // Function prototypes
 int parse_args(int argc, char const* argv[], char* host, uint16_t* port, uint64_t* buffer_size, uint8_t* log_level, uint16_t* max_clients, uint16_t* timeout);
-void print_usage(const char* program_name, const char* host, uint16_t port, uint64_t buffer_size, uint8_t log_level, uint16_t max_clients, uint16_t timeout);
+void print_usage(const char* program_name, const char* host, const uint16_t port, const uint64_t buffer_size, const uint8_t log_level, const uint16_t max_clients, const uint16_t timeout);
 
 void print_log(enum log_type_t type, const char* format, ...);
 void handle_signal(int signal);
@@ -52,6 +52,7 @@ int setup_server(const char* host, uint16_t port);
 
 uint8_t  log_level = LOG_LEVEL_RELEASE;
 volatile sig_atomic_t running = 1;
+uint8_t  is_daemon            = 1;
 
 int main(int argc, char const* argv[])
 {
@@ -61,21 +62,27 @@ int main(int argc, char const* argv[])
     uint16_t max_clients   = 100;
     uint16_t timeout       = 30;
 
-    openlog("backupd", LOG_PID|LOG_CONS, LOG_DAEMON);  // log into journalctl
-
-    print_log(LOG_TYPE_DEBUG, "Starting backup daemon...");
-
     if (parse_args(argc, argv, host, &port, &buffer_size, &log_level, &max_clients, &timeout) != EXIT_CODE_SUCCESS)
         return EXIT_CODE_INVALID_ARGS;
 
     int result = EXIT_CODE_SUCCESS;
-
-    result = init_daemon();
-    if (result != EXIT_CODE_SUCCESS)
+    print_log(LOG_TYPE_DEBUG, "Starting backup daemon...");
+    if (is_daemon)
     {
-        print_log(LOG_TYPE_ERROR, "Failed to initialize daemon");
+        openlog("backupd", LOG_PID|LOG_CONS, LOG_DAEMON);  // log into journalctl
+        print_log(LOG_TYPE_DEBUG, "Running in daemon mode");
 
-        return EXIT_CODE_FAILURE;
+        result = init_daemon();
+        if (result != EXIT_CODE_SUCCESS)
+        {
+            print_log(LOG_TYPE_ERROR, "Failed to initialize daemon");
+
+            return EXIT_CODE_FAILURE;
+        }
+    }
+    else
+    {
+        print_log(LOG_TYPE_DEBUG, "Running in foreground mode");
     }
 
     int listen_fd = setup_server(host, port);
@@ -96,7 +103,10 @@ int main(int argc, char const* argv[])
         sleep(5);
     }
 
-    closelog();
+    if (is_daemon)
+    {
+        closelog();
+    }
     close(listen_fd);
 
     return EXIT_CODE_SUCCESS;
@@ -283,6 +293,10 @@ int parse_args(int argc, char const* argv[], char* host, uint16_t* port, uint64_
         {
             *timeout = (uint16_t)strtoul(argv[i + 1], NULL, 10);
         }
+        else if (strcmp(argv[i], "--daemon") == 0 || strcmp(argv[i], "-d") == 0)
+        {
+            is_daemon = (uint8_t)strtoul(argv[i + 1], NULL, 10);
+        }
         else
         {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
@@ -295,7 +309,7 @@ int parse_args(int argc, char const* argv[], char* host, uint16_t* port, uint64_
     return EXIT_CODE_SUCCESS;
 }
 
-void print_usage(const char* program_name, const char* host, uint16_t port, uint64_t buffer_size, uint8_t log_level, uint16_t max_clients, uint16_t timeout)
+void print_usage(const char* program_name, const char* host, const uint16_t port, const uint64_t buffer_size, const uint8_t log_level, const uint16_t max_clients, const uint16_t timeout)
 {
     const char* usage =
         "This is a backup daemon.\n"
@@ -308,9 +322,10 @@ void print_usage(const char* program_name, const char* host, uint16_t port, uint
         "    --log / -l      STR    Log level: debug or release (default: %s)\n"
         "    --clients / -c  INT    Maximum number of concurrent clients (default: %d)\n"
         "    --timeout / -t  INT    Timeout for client connections in seconds (default: %d seconds)\n"
+        "    --daemon / -d   INT    Run as a daemon (default: %d)\n"
         "Monitor: 'journalctl -t backupd -f'\n";
 
-    printf(usage, program_name, host, port, buffer_size, log_level == LOG_LEVEL_DEBUG ? "debug" : "release", max_clients, timeout);
+    printf(usage, program_name, host, port, buffer_size, log_level == LOG_LEVEL_DEBUG ? "debug" : "release", max_clients, timeout, is_daemon);
 }
 
 void handle_signal (int signal)
@@ -343,16 +358,44 @@ void print_log(enum log_type_t type, const char* format, ...)
     {
 #if LOG_LEVEL == LOG_LEVEL_DEBUG
         case LOG_TYPE_DEBUG:
-            syslog(LOG_DEBUG, "%10s %s\n", "[DEBUG]", msg);
+            if (is_daemon)
+            {
+                syslog(LOG_DEBUG, "%10s %s\n", "[DEBUG]", msg);
+            }
+            else
+            {
+                fprintf(stdout, "%10s %s\n", "[DEBUG]", msg);
+            }
             break;
 #endif
         case LOG_TYPE_ERROR:
-            syslog(LOG_ERR, "%10s %s\n", "[ERROR]", msg);
+            if (is_daemon)
+            {
+                syslog(LOG_ERR, "%10s %s\n", "[ERROR]", msg);
+            }
+            else
+            {
+                fprintf(stderr, "%10s %s\n", "[ERROR]", msg);
+            }
             break;
         case LOG_TYPE_WARNING:
-            syslog(LOG_WARNING, "%10s %s\n", "[WARNING]", msg);
+            if (is_daemon)
+            {
+                syslog(LOG_WARNING, "%10s %s\n", "[WARNING]", msg);
+            }
+            else
+            {
+                fprintf(stderr, "%10s %s\n", "[WARNING]", msg);
+            }
             break;
         default:
-            syslog(LOG_WARNING, "%10s %s\n", "WARNING:", "unknown log type.");
+            if (is_daemon)
+            {
+                syslog(LOG_WARNING, "%10s %s\n", "WARNING:", "unknown log type.");
+            }
+            else
+            {
+                fprintf(stderr, "%10s %s\n", "WARNING:", "unknown log type.");
+            }
     }
 }
